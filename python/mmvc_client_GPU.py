@@ -245,26 +245,14 @@ class Hyperparameters():
         #第一節を取得する
         try:
             print("準備が完了しました。VC開始します。")
-            #マイクから音声読み込み
-            #最初のデータAを取得する
-            #rawdataのsizeは(frame_length * 2 - overlap)の2倍になっている type=byte 30720
-            ##8192
-            in_raw_data_A = audio_input_stream.read(Hyperparameters.FLAME_LENGTH, exception_on_overflow = False)
-            #背景BGMを取得
-            back_in_raw_data_A = back_audio_input_stream.read(Hyperparameters.FLAME_LENGTH, exception_on_overflow = False)
-            #ボイチェン(取得した音声の前半)
-            #trancedataのsizeは(frame_length*2)となっている type=byte 16384
-            trance_data_A = self.audio_trans_GPU(tdbm, in_raw_data_A, net_g, noise_data, target_id)
-            #Hyperparameters.DELAY_FLAMES + overlap を後半部分から取る
-            #ゴミ+Hyperparameters.DELAY_FLAMES+overlap >> Hyperparameters.DELAY_FLAMES+overlap
-            tmp = trance_data_A
-            tmp2 = back_in_raw_data_A
-            trance_data_A = trance_data_A[-(Hyperparameters.DELAY_FLAMES + overlap)*2:-overlap*2]
-            back_trance_data_A = back_in_raw_data_A[-(Hyperparameters.DELAY_FLAMES + overlap)*2:-overlap*2]
-            overlap_trance_data = tmp[-overlap*2:]
-            overlap_back_trance_data = tmp2[-overlap*2:]
 
+            in_raw_data = audio_input_stream.read(Hyperparameters.FLAME_LENGTH, exception_on_overflow = False)
+            trance_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id)
             while True:
+                audio_output_stream.write(trance_data)
+                in_raw_data = audio_input_stream.read(Hyperparameters.FLAME_LENGTH, exception_on_overflow = False)
+                trance_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id)
+
                 #声id変更 数字キーの0～9で切り替え
                 for k in range(10) :
                     if keyboard.is_pressed(str(k)) :
@@ -275,47 +263,6 @@ class Hyperparameters():
                 if Hyperparameters.VC_END_FLAG: #エスケープ
                     print("vc_finish")
                     break
-                #音声後半のoverlapを取得する
-                overlap_trance_data_A = trance_data_A[-overlap*2:]
-                trance_data_A = trance_data_A[:-overlap*2]
-                overlap_back_trance_data_A = back_trance_data_A[-overlap*2:]
-                back_trance_data_A = back_trance_data_A[:-overlap*2]
-
-                #(overlap(処理済み) + Hyperparameters.DELAY_FLAMES - 次のoverlap)の音声を出力する
-                out_trance_data_A = overlap_trance_data + trance_data_A
-                out_back_trance_data_A = overlap_back_trance_data + back_trance_data_A
-                #overlap + Hyperparameters.DELAY_FLAMESの音声を出力
-                audio_output_stream.write(out_trance_data_A)
-                if Hyperparameters.INPUT_DEVICE_2 != False:
-                    back_audio_output_stream.write(out_back_trance_data_A)
-                
-                #音声が出力されている間に次の音声の準備をする
-                #Hyperparameters.DELAY_FLAMESだけ、音声を取得する
-                in_raw_data_B = audio_input_stream.read(Hyperparameters.DELAY_FLAMES)
-                back_in_raw_data_B = back_audio_input_stream.read(Hyperparameters.DELAY_FLAMES)
-                #取得したサイズと前のデータの後ろを組み合わせて、segment_size(8192)にする。
-                in_raw_data_A = in_raw_data_A[-Hyperparameters.DELAY_FLAMES*2:] + in_raw_data_B
-                back_in_raw_data_A = back_in_raw_data_A[-Hyperparameters.DELAY_FLAMES*2:] + back_in_raw_data_B
-
-                #ボイチェン
-                #trancedataのsizeは(frame_length*2)となっている type=byte 16384
-                trance_data_B = self.audio_trans_GPU(tdbm, in_raw_data_A, net_g, noise_data, target_id)
-                #overlap + 後半部分のみ使う
-                trance_data_B = trance_data_B[-(overlap + Hyperparameters.DELAY_FLAMES)*2:]
-                #back 処理用
-                back_trance_data_B = back_in_raw_data_B[-(overlap + Hyperparameters.DELAY_FLAMES)*2:]
-                #overlap対応(今度は前半文)
-                overlap_trance_data_B = trance_data_B[:overlap*2]
-                overlap_back_trance_data_B = back_trance_data_B[:overlap*2]
-                trance_data_B = trance_data_B[overlap*2:]
-                back_trance_data_B = back_trance_data_B[:overlap*2:]
-                #overlap マージ
-                overlap_trance_data = self.over_lap_marge(overlap_trance_data_A,overlap_trance_data_B,overlap)
-                overlap_back_trance_data = self.over_lap_marge(overlap_back_trance_data_A,overlap_back_trance_data_B,overlap)
-
-                trance_data_A = trance_data_B
-                back_trance_data_A = back_trance_data_B
-                
 
         except KeyboardInterrupt:
             audio_input_stream.stop_stream()
