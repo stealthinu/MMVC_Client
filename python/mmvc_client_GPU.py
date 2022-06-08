@@ -147,7 +147,7 @@ class Hyperparameters():
         print("モデルの読み込みが完了しました。音声の入出力の準備を行います。少々お待ちください。")
         return net_g
         
-    def audio_trans_GPU(self, tdbm, input, net_g, noise_data, target_id, frame_length, win_length, hop_length):
+    def audio_trans_GPU(self, tdbm, input, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length):
         # byte => torch
         signal = np.frombuffer(input, dtype='int16')
         #signal = torch.frombuffer(input, dtype=torch.float32)
@@ -164,9 +164,9 @@ class Hyperparameters():
         with torch.no_grad():
             #SID
             text, spec, wav, sid = tdbm.get_audio_text_speaker_pair(signal.view(1, frame_length + win_length), ["m", Hyperparameters.SOURCE_ID, "m"])
-            # specの頭と終がpaddingの影響受けるので2コマを削る
-            spec = spec[:, ((0 + win_length // 2) // hop_length):(frame_length + win_length // 2) // hop_length] # spec全体の68コマ中、頭と終の2個づつ捨てる
-            # wavもwin_length(512)だけ増えてるので頭256と終256を削るになってる
+            # specの頭と終がstft paddingの影響受けるので2コマを削る
+            spec = spec[:, ((0 + win_length // 2) // hop_length):(frame_length + win_length // 2) // hop_length] # spec全体の68コマ中、頭と終の2コマづつ捨てる
+            # wavもwin_length(512)だけ増えてるので頭256と終256を削る
             wav = wav[:, win_length // 2:frame_length + win_length // 2]
             data = TextAudioSpeakerCollate()([(text, spec, wav, sid)])
             x, x_lengths, spec, spec_lengths, y, y_lengths, sid_src = [x.cuda() for x in data]
@@ -250,19 +250,23 @@ class Hyperparameters():
         wav_bytes = 2 # 1音声データあたりのデータサイズ(2bytes) (math.log2(max_wav_value)+1)/8 で算出してもよいけど
         win_length = hps.data.filter_length
         hop_length = hps.data.hop_length
+        #dispose_spec_length =  4 + 20 # stft:2x2 conv1d padding:10x2
+        dispose_specs =  4 # stft:2x2
+        dispose_length = hop_length * dispose_specs
 
         #第一節を取得する
         try:
             print("準備が完了しました。VC開始します。")
 
-            prev_raw_tail = bytes(win_length * wav_bytes) # stftのpadding用にwin_lengthぶんだけ前回のデータを保持する
+            prev_raw_tail = bytes(dispose_length * wav_bytes) # stftのpadding用にwin_lengthぶんだけ前回のデータを保持する
             in_raw_data = prev_raw_tail + audio_input_stream.read(frame_length, exception_on_overflow = False)
-            trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length)
-            prev_raw_tail = in_raw_data[-(win_length * wav_bytes):] # win_length/2 ぶんだけ前回のデータを保持する
+            trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length)
+            prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # win_length/2 ぶんだけ前回のデータを保持する
             while True:
                 audio_output_stream.write(trans_data)
                 in_raw_data = prev_raw_tail + audio_input_stream.read(frame_length, exception_on_overflow = False)
-                trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length)
+                trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length)
+                prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # win_length/2 ぶんだけ前回のデータを保持する
 
                 #声id変更 数字キーの0～9で切り替え
                 for k in range(10) :
