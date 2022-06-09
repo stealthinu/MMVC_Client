@@ -56,6 +56,8 @@ class Hyperparameters():
     REC_NOISE_END_FLAG = False
     VC_END_FLAG = False
     OVERLAP = None
+    DISPOSE_STFT_SPECS = 0
+    DISPOSE_CONV1D_SPECS = 0
     
 
     def set_input_device_1(self, value):
@@ -105,6 +107,12 @@ class Hyperparameters():
     def set_DELAY_FLAMES(self, value):
         Hyperparameters.DELAY_FLAMES = value
 
+    def set_DISPOSE_STFT_SPECS(self, value):
+        Hyperparameters.DISPOSE_STFT_SPECS = value
+
+    def set_DISPOSE_CONV1D_SPECS(self, value):
+        Hyperparameters.DISPOSE_CONV1D_SPECS = value
+
     def set_profile(self, profile):
         sound_devices = sd.query_devices()
         if type(profile.device.input_device1) == str:
@@ -132,6 +140,8 @@ class Hyperparameters():
         self.set_USE_NR(profile.others.use_nr)
         self.set_VOICE_LIST(profile.others.voice_list)
         self.set_DELAY_FLAMES(profile.vc_conf.delay_flames)
+        self.set_DISPOSE_STFT_SPECS(profile.vc_conf.dispose_stft_specs)
+        self.set_DISPOSE_CONV1D_SPECS(profile.vc_conf.dispose_conv1d_specs)
 
     def launch_model(self):
         hps = utils.get_hparams_from_file(Hyperparameters.CONFIG_JSON_PATH)
@@ -147,7 +157,11 @@ class Hyperparameters():
         print("モデルの読み込みが完了しました。音声の入出力の準備を行います。少々お待ちください。")
         return net_g
         
-    def audio_trans_GPU(self, tdbm, input, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length):
+    def audio_trans_GPU(self, tdbm, input, net_g, noise_data, target_id, dispose_stft_specs, dispose_conv1d_specs):
+        hop_length = Hyperparameters.HOP_LENGTH
+        dispose_stft_length = dispose_stft_specs * hop_length
+        dispose_conv1d_length = dispose_conv1d_specs * hop_length
+    
         # byte => torch
         signal = np.frombuffer(input, dtype='int16')
         #signal = torch.frombuffer(input, dtype=torch.float32)
@@ -163,21 +177,26 @@ class Hyperparameters():
         #voice conversion
         with torch.no_grad():
             #SID
-            text, spec, wav, sid = tdbm.get_audio_text_speaker_pair(signal.view(1, frame_length + win_length), ["m", Hyperparameters.SOURCE_ID, "m"])
-            # specの頭と終がstft paddingの影響受けるので2コマを削る
-            spec = spec[:, ((0 + win_length // 2) // hop_length):(frame_length + win_length // 2) // hop_length] # spec全体の68コマ中、頭と終の2コマづつ捨てる
-            # wavもwin_length(512)だけ増えてるので頭256と終256を削る
-            wav = wav[:, win_length // 2:frame_length + win_length // 2]
+            trans_length = signal.size()[0]
+            text, spec, wav, sid = tdbm.get_audio_text_speaker_pair(signal.view(1, trans_length), ["m", Hyperparameters.SOURCE_ID, "m"])
+            if dispose_stft_specs != 0:
+                # specの頭と終がstft paddingの影響受けるので2コマを削る
+                # wavもspecで削るぶんと同じだけ頭256と終256を削る
+                spec = spec[:, dispose_stft_specs:-dispose_stft_specs]
+                wav = wav[:, dispose_stft_length:-dispose_stft_length]
             data = TextAudioSpeakerCollate()([(text, spec, wav, sid)])
             x, x_lengths, spec, spec_lengths, y, y_lengths, sid_src = [x.cuda() for x in data]
 
-            sid_tgt1 = torch.LongTensor([target_id]).cuda() # 話者IDはJVSの番号を100で割った余りです
-            audio1 = net_g.cuda().voice_conversion(spec, spec_lengths, sid_src=sid_src, sid_tgt=sid_tgt1)[0][0,0].data.cpu().float().numpy()
+            sid_target = torch.LongTensor([target_id]).cuda() # 話者IDはJVSの番号を100で割った余りです
+            audio = net_g.cuda().voice_conversion(spec, spec_lengths, sid_src=sid_src, sid_tgt=sid_target)[0][0,0].data.cpu().float().numpy()
 
-        audio1 = audio1 * Hyperparameters.MAX_WAV_VALUE
-        audio1 = audio1.astype(np.int16).tobytes()
+        if dispose_conv1d_specs != 0:
+            # 出力されたwavでconv1d paddingの影響受けるところを削る
+            audio = audio[dispose_conv1d_length:-dispose_conv1d_length]
+        audio = audio * Hyperparameters.MAX_WAV_VALUE
+        audio = audio.astype(np.int16).tobytes()
 
-        return audio1
+        return audio
 
     def over_lap_marge(self,trance_data_A,trance_data_B,overlap):
         a = np.arange(overlap)/overlap
@@ -192,7 +211,6 @@ class Hyperparameters():
         return signal
 
     def vc_run(self):
-        hps = utils.get_hparams_from_file(Hyperparameters.CONFIG_JSON_PATH)
         audio = pyaudio.PyAudio()
         print("モデルを読み込んでいます。少々お待ちください。")
         net_g = self.launch_model()
@@ -248,25 +266,27 @@ class Hyperparameters():
         target_id = Hyperparameters.TARGET_ID
         frame_length = Hyperparameters.FLAME_LENGTH
         wav_bytes = 2 # 1音声データあたりのデータサイズ(2bytes) (math.log2(max_wav_value)+1)/8 で算出してもよいけど
-        win_length = hps.data.filter_length
-        hop_length = hps.data.hop_length
-        #dispose_spec_length =  4 + 20 # stft:2x2 conv1d padding:10x2
-        dispose_specs =  4 # stft:2x2
-        dispose_length = hop_length * dispose_specs
+        hop_length = Hyperparameters.HOP_LENGTH
+        dispose_stft_specs = Hyperparameters.DISPOSE_STFT_SPECS
+        dispose_conv1d_specs = Hyperparameters.DISPOSE_CONV1D_SPECS
+        dispose_specs =  dispose_stft_specs * 2 + dispose_conv1d_specs * 2
+        dispose_length = dispose_specs * hop_length
 
         #第一節を取得する
         try:
             print("準備が完了しました。VC開始します。")
 
-            prev_raw_tail = bytes(dispose_length * wav_bytes) # stftのpadding用にwin_lengthぶんだけ前回のデータを保持する
-            in_raw_data = prev_raw_tail + audio_input_stream.read(frame_length, exception_on_overflow = False)
-            trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length)
-            prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # win_length/2 ぶんだけ前回のデータを保持する
+            prev_raw_tail = bytes(0)
+            in_raw_data = audio_input_stream.read(frame_length, exception_on_overflow=False)
+            trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, 0, 0) # 遅延減らすため初回だけpadding対策使わない
+            if dispose_length != 0:
+                prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # 今回の終の捨てデータぶんだけ次回の頭のデータとして保持する
             while True:
                 audio_output_stream.write(trans_data)
-                in_raw_data = prev_raw_tail + audio_input_stream.read(frame_length, exception_on_overflow = False)
-                trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, frame_length, win_length, hop_length, dispose_specs, dispose_length)
-                prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # win_length/2 ぶんだけ前回のデータを保持する
+                in_raw_data = prev_raw_tail + audio_input_stream.read(frame_length, exception_on_overflow=False)
+                trans_data = self.audio_trans_GPU(tdbm, in_raw_data, net_g, noise_data, target_id, dispose_stft_specs, dispose_conv1d_specs)
+                if dispose_length != 0:
+                    prev_raw_tail = in_raw_data[-(dispose_length * wav_bytes):] # 今回の終の捨てデータぶんだけ次回の頭のデータとして保持する
 
                 #声id変更 数字キーの0～9で切り替え
                 for k in range(10) :
