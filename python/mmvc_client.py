@@ -354,6 +354,7 @@ class Hyperparameters():
             ort_options = ort.SessionOptions()
             ort_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             ort_options.enable_mem_pattern = False
+            ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC # https://kazuhito00.hatenablog.com/entry/2022/10/13/133248
             ort_session = ort.InferenceSession(
                 Hyperparameters.MODEL_PATH,
                 sess_options=ort_options,
