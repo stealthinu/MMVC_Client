@@ -478,7 +478,7 @@ class Hyperparameters():
             ort_options.enable_mem_pattern = False
             if Hyperparameters.ORT_ENABLE_BASIC:
                 ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC # https://kazuhito00.hatenablog.com/entry/2022/10/13/133248
-            ort_options.enable_profiling = True
+            #ort_options.enable_profiling = True
             ort_session = ort.InferenceSession(
                 Hyperparameters.MODEL_PATH,
                 sess_options=ort_options,
