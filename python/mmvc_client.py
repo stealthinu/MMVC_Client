@@ -121,6 +121,7 @@ class Hyperparameters():
     MODEL_PATH = None
     NOISE_FILE = None
     CORRESPONDENCE_PATH = None
+    SIN_D_MODEL_PATH = "python/make_sin_d.onnx"
     FLAME_LENGTH = None
     SOURCE_ID = None
     TARGET_ID = None
@@ -357,7 +358,7 @@ class Hyperparameters():
         f = interp1d(nz_frames, cf0[nz_frames], bounds_error=False, fill_value=0.0)
         return f(np.arange(0, f0_size))
 
-    def audio_trans(self, tdbm, input, net_g, noise_data, target_id, f0_scale, dispose_stft_specs, dispose_conv1d_specs, ort_session=None):
+    def audio_trans(self, tdbm, input, net_g, noise_data, target_id, f0_scale, dispose_stft_specs, dispose_conv1d_specs, ort_session=None, ort_sin_d_session=None):
         gpu_id = Hyperparameters.GPU_ID
         mic_scale = Hyperparameters.MIC_SCALE
         hop_length = Hyperparameters.HOP_LENGTH
@@ -397,19 +398,24 @@ class Hyperparameters():
             spec_lengths = torch.tensor([spec.size(2)])
             f0 = (f0 * f0_scale).unsqueeze(0).unsqueeze(0)
             if Hyperparameters.USE_ONNX:
-                sin, d = net_g.make_sin_d(f0)
-                (d0, d1, d2, d3) = d
+                #sin, d = net_g.make_sin_d(f0)
+                #(d0, d1, d2, d3) = d
+                sin, d0, d1, d2, d3 = ort_sin_d_session.run(
+                    ["sin", "d0", "d1", "d2", "d3"],
+                    {
+                        "f0": f0.numpy(),
+                    })
                 if spec.size()[2] >= 8:
                     audio = ort_session.run(
                         ["audio"],
                         {
                             "specs": spec.numpy(),
                             "lengths": spec_lengths.numpy(),
-                            "sin": sin.numpy(),
-                            "d0": d0.numpy(),
-                            "d1": d1.numpy(),
-                            "d2": d2.numpy(),
-                            "d3": d3.numpy(),
+                            "sin": sin,
+                            "d0": d0,
+                            "d1": d1,
+                            "d2": d2,
+                            "d3": d3,
                             "sid_src": sid_src.numpy(),
                             "sid_tgt": sid_target.numpy()
                         })[0][0,0]
@@ -472,9 +478,13 @@ class Hyperparameters():
             ort_options.enable_mem_pattern = False
             if Hyperparameters.ORT_ENABLE_BASIC:
                 ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC # https://kazuhito00.hatenablog.com/entry/2022/10/13/133248
-            #ort_options.enable_profiling = True
+            ort_options.enable_profiling = True
             ort_session = ort.InferenceSession(
                 Hyperparameters.MODEL_PATH,
+                sess_options=ort_options,
+                providers=Hyperparameters.ONNX_PROVIDERS)
+            ort_sin_d_session = ort.InferenceSession(
+                Hyperparameters.SIN_D_MODEL_PATH,
                 sess_options=ort_options,
                 providers=Hyperparameters.ONNX_PROVIDERS)
         else:
@@ -579,7 +589,7 @@ class Hyperparameters():
             while True:
                 f0_factor = tdbm.get_f0_scale(source_id, target_id) * f0_scale * target_f0_scale
                 in_wav = prev_wav_tail + audio_input_stream.read(delay_frames, exception_on_overflow=False)
-                trans_wav = self.audio_trans(tdbm, in_wav, net_g, noise_data, target_id, f0_factor, dispose_stft_specs, dispose_conv1d_specs, ort_session=ort_session)
+                trans_wav = self.audio_trans(tdbm, in_wav, net_g, noise_data, target_id, f0_factor, dispose_stft_specs, dispose_conv1d_specs, ort_session=ort_session, ort_sin_d_session=ort_sin_d_session)
                 overlapped_wav = self.overlap_merge(trans_wav,  prev_trans_wav, overlap_length)
                 audio_output_stream.write(overlapped_wav)
                 prev_trans_wav = trans_wav
